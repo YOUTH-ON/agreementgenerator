@@ -7,56 +7,65 @@ from reportlab.lib.pagesizes import A4
 from datetime import datetime
 import io
 
-# PDF用日本語フォントの設定 (HeiseiKakuGo-W5 を使用)
+# PDF用日本語フォントの設定
 pdfmetrics.registerFont(UnicodeCIDFont('HeiseiKakuGo-W5'))
 
+# --- 住所検索関数 ---
 def get_address(zipcode):
-    """郵便番号から住所を取得する関数"""
+    if not zipcode:
+        st.warning("郵便番号を入力してください。")
+        return None
     url = f"https://zipcloud.ibsnet.co.jp/api/search?zipcode={zipcode}"
-    response = requests.get(url)
-    data = response.json()
-    if data['results']:
-        res = data['results'][0]
-        return f"{res['address1']}{res['address2']}{res['address3']}"
-    return ""
+    try:
+        response = requests.get(url)
+        data = response.json()
+        if data['results']:
+            res = data['results'][0]
+            return f"{res['address1']}{res['address2']}{res['address3']}"
+        else:
+            st.error("住所が見つかりませんでした。")
+            return None
+    except Exception as e:
+        st.error(f"エラーが発生しました: {e}")
+        return None
 
+# --- PDF生成関数 ---
 def create_pdf(content):
-    """テキスト内容をPDF化する関数"""
     buffer = io.BytesIO()
     p = canvas.Canvas(buffer, pagesize=A4)
     p.setFont('HeiseiKakuGo-W5', 10)
-    
-    # テキストを描画（簡易的な改行処理）
     width, height = A4
     y = height - 50
     for line in content.split('\n'):
-        if y < 50: # ページをまたぐ処理（簡易版）
+        if y < 50:
             p.showPage()
             p.setFont('HeiseiKakuGo-W5', 10)
             y = height - 50
         p.drawString(50, y, line)
         y -= 15
-        
     p.save()
     buffer.seek(0)
     return buffer
 
 st.title("契約書作成アプリ Pro")
 
+# --- セッション状態の初期化（住所保持用） ---
+if 'kou_address' not in st.session_state:
+    st.session_state.kou_address = ""
+if 'otsu_address' not in st.session_state:
+    st.session_state.otsu_address = ""
+
 # --- 入力フォーム ---
 with st.form("contract_form"):
     st.subheader("基本情報")
-    
-    # ① 契約書種別の選択
     contract_options = ["業務委託", "秘密保持(NDA)", "売買", "賃貸借", "アドバイザリー"]
     contract_type = st.selectbox("契約書種別", contract_options)
-    
     business_name = st.text_input("業務名（例：Webサイト制作業務）")
     
-    # ② 報酬額の選択と入力
+    # ② 報酬単位に「1件当たり報酬額」を追加
     col_reward1, col_reward2, col_reward3 = st.columns([1, 2, 1])
     with col_reward1:
-        reward_type = st.selectbox("報酬単位", ["日額", "月額", "年額"])
+        reward_type = st.selectbox("報酬単位", ["日額", "月額", "年額", "1件当たり報酬額"])
     with col_reward2:
         reward_amount = st.number_input("金額 (円)", min_value=0, step=1000)
     with col_reward3:
@@ -64,29 +73,53 @@ with st.form("contract_form"):
     
     payment_condition = st.text_input("入金条件", placeholder="翌月末日")
 
-    # ③ 所在地・住所検索
+    # ③ 住所自動入力（甲）
     st.subheader("当事者情報（甲）")
-    kou_zip = st.text_input("甲：郵便番号 (ハイフンなし)", max_chars=7)
-    kou_address = st.text_input("甲：所在地", value=get_address(kou_zip) if len(kou_zip) == 7 else "")
+    col_zip_k1, col_zip_k2 = st.columns([2, 1])
+    with col_zip_k1:
+        kou_zip = st.text_input("甲：郵便番号 (ハイフンなし)", max_chars=7, key="kou_zip_input")
+    with col_zip_k2:
+        # フォーム内のボタンは少し特殊なため、外で処理するかFormのSubmitを活用するのが一般的ですが、
+        # ここでは住所検索用のトリガーとして説明文を添えます。
+        st.write(" ") 
+        search_kou = st.form_submit_button("甲：住所自動入力")
+
+    if search_kou:
+        addr = get_address(kou_zip)
+        if addr:
+            st.session_state.kou_address = addr
+            
+    kou_address = st.text_input("甲：所在地", value=st.session_state.kou_address)
     kou_name = st.text_input("甲：名称")
     kou_title = st.text_input("甲：役職・代表者名")
 
+    # ③ 住所自動入力（乙）
     st.subheader("当事者情報（乙）")
-    otsu_zip = st.text_input("乙：郵便番号 (ハイフンなし)", max_chars=7)
-    otsu_address = st.text_input("乙：所在地", value=get_address(otsu_zip) if len(otsu_zip) == 7 else "")
+    col_zip_o1, col_zip_o2 = st.columns([2, 1])
+    with col_zip_o1:
+        otsu_zip = st.text_input("乙：郵便番号 (ハイフンなし)", max_chars=7, key="otsu_zip_input")
+    with col_zip_o2:
+        st.write(" ")
+        search_otsu = st.form_submit_button("乙：住所自動入力")
+
+    if search_otsu:
+        addr = get_address(otsu_zip)
+        if addr:
+            st.session_state.otsu_address = addr
+
+    otsu_address = st.text_input("乙：所在地", value=st.session_state.otsu_address)
     otsu_name = st.text_input("乙：名称")
     otsu_title = st.text_input("乙：役職・代表者名")
 
     contract_date = st.date_input("契約締結日", datetime.now())
     
-    submit_button = st.form_submit_button("契約書を生成")
+    # 最終的な契約書生成ボタン
+    submit_main = st.form_submit_button("契約書(PDF)を確定・生成")
 
 # --- プレビューとPDF生成 ---
-if submit_button:
-    # 報酬額の文章化
+if submit_main:
     reward_text = f"{reward_type} {reward_amount:,}円（{tax_type}）"
     
-    # 契約書の内容構築
     content = f"""
 {contract_type}契約書
 
@@ -114,9 +147,7 @@ if submit_button:
 """
 
     st.success("契約書が生成されました！")
-    st.text_area("プレビュー", content, height=300)
-
-    # ④ PDFダウンロード
+    
     pdf_file = create_pdf(content)
     st.download_button(
         label="PDFをダウンロード",
